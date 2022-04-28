@@ -1,0 +1,699 @@
+## A. Data Preparation
+
+#### Original Tutorial: https://cran.r-project.org/web/packages/bikedata/vignettes/bikedata.html#3_downloading_data
+
+#### Load required packages (install first if necessary)
+
+```{r, message = FALSE}
+library(bikedata)
+library(RSQLite)
+library(tseries)
+library(xts)
+library(forecast)
+library(ggplot2)
+library(tibble)
+library(expsmooth)
+library(vars)
+library(TSA)
+```
+
+```{r}
+## Load this image to skip running all script below.
+
+load("Divvy_Project_8192018.RData")
+```
+
+#### Download and import Divvy Trips data 
+
+```{r, eval = FALSE, echo = FALSE}
+dl_bikedata (city = 'chicago', dates = 2013:2017, data_dir = "D:/1 UOC/Summer 2018/MSCA 31006 Time Series Analysis and Forecasting/Project/", quiet=TRUE)
+
+bikedb = file.path("D:/1 UOC/Summer 2018/MSCA 31006 Time Series Analysis and Forecasting/Project/", "bikedb.sqlite")
+
+store_bikedata (data_dir = "D:/1 UOC/Summer 2018/MSCA 31006 Time Series Analysis and Forecasting/Project", bikedb = bikedb, quiet = TRUE)
+
+# add indexes to database to speed up aggregation
+index_bikedata_db (bikedb = bikedb)
+```
+
+#### Examine daily number of trips
+
+```{r, eval = FALSE, echo = FALSE}
+time.series = bike_daily_trips(bikedb = bikedb)
+plot(time.series, type='l')
+```
+
+```{r}
+## Load saved environment (do this to skip step 1 - 31)
+load("Divvy.RData")
+```
+
+#### Divvy Trips dataset has missing values - 2014/1/7 and 2014/1/8. We substitue the missing values by using the average value of 2014/01/06 and 2014/01/09
+
+```{r}
+time.series2 = add_row(time.series, date = c(as.Date("2014-01-07"), as.Date("2014-01-08")), numtrips = c((time.series[[194,2]]+time.series[[195,2]])/2, (time.series[[194,2]]+time.series[[195,2]])/2), .after = 194)
+```
+
+#### Remove leap year day for simplicity 
+
+```{r}
+which(time.series2$date == "2016/02/29")
+```
+
+```{r}
+time.series2 = time.series2[-c(978),]
+```
+
+#### Combine and import Divvy Stations data
+
+```{r}
+setwd("D:/1 UOC/1 Summer 2018/MSCA 31006 Time Series Analysis and Forecasting/1 Project/")
+filenames = dir("D:/1 UOC/1 Summer 2018/MSCA 31006 Time Series Analysis and Forecasting/1 Project/")
+stations.data = lapply(filenames[grep("Divvy_Stations_2", filenames)], read.csv)
+```
+
+```{r}
+stations.data.combined = stations.data[[1]]
+
+for(i in 2:7) {
+  stations.data.combined = merge(stations.data.combined, stations.data[[i]], all.y = TRUE)
+}
+```
+
+
+```{r}
+# Reformat online_date column to date %m/%d/%Y format
+stations.data.combined$online_date = as.Date(stations.data.combined$online_date, format = "%m/%d/%Y")
+```
+
+#### Create data frame to record total number of active stations on a given date
+
+```{r}
+x = table(stations.data.combined$online_date)
+stations.info = data.frame(Date = x, Cumulative = cumsum(as.vector(x)))
+stations.info$Date.Var1 = as.Date(stations.info$Date.Var1, format = '%Y-%m-%d')
+head(stations.info)
+```
+
+#### Combine stations and trips data into data frame - divvy
+
+```{r}
+divvy = as.data.frame(time.series2)
+
+for (i in 1:nrow(time.series2)){
+  for(j in 1:(nrow(stations.info)-1))  {
+        if(divvy[i,1] ==  stations.info$Date.Var1[j]) {
+            divvy[i,3] = stations.info$Cumulative[j]
+        } else if (divvy[i,1] > stations.info$Date.Var1[j] && divvy[i,1] < stations.info$Date.Var1[j+1]) {
+              divvy[i,3] = stations.info$Cumulative[j]
+          } else if (divvy[i,1] >  stations.info$Date.Var1[j]) {
+                divvy[i,3] = stations.info$Cumulative[nrow(stations.info)]
+        }
+  }
+}
+head(divvy)
+```
+
+#### Compute the average number of trips for each day and convert the dataframe into time series
+
+```{r}
+divvy[,4] = divvy[,2]/divvy[,3]
+colnames(divvy) = c("Date", "TotalTrip", "ActiveStation", "AverageTrip")
+
+# Convert data frame into time series
+divvy = ts(divvy[,2:4], start = c(2013,178), frequency = 365)
+head(divvy)
+```
+
+`divvy will be the main dataset we are going to use`
+
+
+```{r}
+load("Divvy_completedata.RData")
+```
+
+## B. Data Analysis
+
+```{r}
+plot(divvy)
+```
+
+```{r}
+acf(divvy)
+```
+
+```{r}
+pacf(divvy)
+```
+
+
+#### Split data into Train and Test Sets
+
+```{r}
+train.set = ts(divvy[1:1500,], frequency = 365, start = c(2013, 178), end = c(2017, 217))
+test.set = ts(divvy[1501:1648,], frequency = 365, start = c(2017, 218))
+```
+
+## C. Data Normalization
+
+Normalized Total Number of Trips =  $$\frac {Total\ Number\ of\ Trips * Total\ Number\ of\ Active\ Stations}{Number\ of\ Active\ Stations\ at\ a\ given\ date }$$
+
+```{r}
+
+divvy.norm = divvy
+
+m = max(divvy.norm[,2])
+
+for (i in 1:dim(divvy.norm)[1]) {
+  divvy.norm[i, 1] = divvy.norm[i, 1] * (m/divvy.norm[i,2])
+}
+
+```
+
+#### Comparing original data and normalized data
+
+```{r}
+plot(divvy.norm[,1])
+lines(divvy[,1], col = 'red')
+```
+
+#### Apply natural log transformation to check if that helps stabilize the normalized data
+
+```{r}
+plot(log(divvy.norm[,1])) # low outlier corresponds to Jan 6, 2014 - coldest Jan 6 in Chicago history dating back to 1870
+```
+
+#### Apply Box-Cox transformation to check if that helps stabilize the normalized data
+
+```{r}
+lambda = BoxCox.lambda(divvy.norm[,1]) # auto-generated lambda does not help to stabilize variance
+plot(BoxCox(divvy.norm[,1],lambda))
+```
+
+Natural log transformation seems to stabilize the data's variance more than Box-Cox transformation. Hence, we are going to use natural log transformation in our sArima model. 
+
+
+#### Split data into Train and Test Sets
+
+```{r}
+train.norm = ts(divvy.norm[1:1500,], frequency = 365, start = c(2013, 178), end = c(2017, 217))
+test.norm = ts(divvy.norm[1501:1648,], frequency = 365, start = c(2017, 218))
+```
+
+## D. Modeling
+
+### 1. sNaive
+
+#### Forecast total number of trips per day using sNaive method.
+
+```{r}
+forecast.snaive = snaive(train.norm[,1], h = 148)
+```
+
+```{r}
+par(xpd = TRUE)
+plot(forecast.snaive)
+lines(test.norm[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+```
+
+#### Compute the accuracy score and check the sNaive model's residuals 
+
+```{r}
+(acc.snaive = accuracy(forecast.snaive, test.norm[,1]))
+```
+
+```{r}
+checkresiduals(forecast.snaive)
+```
+
+### 2. sArima
+
+#### Build the sArima model with natural log transformation
+
+```{r}
+(sArima.model = auto.arima(train.norm[,1], lambda = 0))
+```
+
+
+#### Forecast total number of trips per day using sArima model
+
+```{r}
+forecast.sArima = forecast(sArima.model, h = 148)
+```
+
+```{r}
+plot(forecast.sArima)
+lines(test.norm[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+```
+
+#### Compute the accuracy score and check the sArima model's residuals 
+
+```{r}
+(accuracy(forecast.sArima$mean, test.norm[,1]))
+```
+
+```{r}
+checkresiduals(forecast.sArima)
+```
+
+### 3. Dynamic Harmonic Regression
+
+#### Build the Dynamic Harmonic Regression (DHR) model
+
+```{r}
+DHR.p = periodogram(divvy.norm[,1])
+max.spec = max(DHR.p$spec)
+f = DHR.p$freq[DHR.p$spec == max.spec]
+DHR.period = 1/f
+
+DHR.model = list(aicc = Inf)
+
+for(i in 1:25) {
+  DHR.fit = auto.arima(train.norm[,1], xreg = fourier(train.norm[,1], i), seasonal = FALSE)
+  if(DHR.fit$aicc < DHR.model$aicc) DHR.model = DHR.fit
+}
+```
+
+```{r}
+summary(DHR.model)
+```
+
+#### Forecast total number of trips per day using Dynamic Harmonic Regression (DHR) model
+
+```{r}
+forecast.DHR = forecast(DHR.model, xreg = fourier(train.norm[,1], 1, 148))
+```
+
+```{r}
+plot(forecast.DHR)
+lines(test.norm[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+```
+
+#### Compute the accuracy score and check the sNaive model's residuals 
+
+```{r}
+accuracy(forecast.DHR$mean, test.norm[,1])
+```
+
+```{r}
+checkresiduals(forecast.DHR)
+```
+
+### 4. VAR 
+
+#### Import Chicago Weather Data
+
+```{r, message = FALSE}
+weather = read.csv("chicago_weather.csv")
+```
+
+```{r}
+# Reformat Variables
+weather$DATE = as.Date(weather$DATE, format = "%m/%d/%Y")
+weather$AWND = as.numeric(weather$AWND)
+weather$PRCP = as.numeric(weather$PRCP)
+weather$SNOW = as.numeric(weather$SNOW)
+weather$SNWD = as.numeric(weather$SNWD)
+weather$TAVG = as.numeric(weather$TAVG)
+weather$TMAX = as.numeric(weather$TMAX)
+weather$TMIN = as.numeric(weather$TMIN)
+weather$WDF2 = as.numeric(weather$WDF2)
+weather$WDF5 = as.numeric(weather$WDF5)
+weather$WSF2 = as.numeric(weather$WSF2)
+weather$WSF5 = as.numeric(weather$WSF5)
+```
+
+```{r}
+weather = ts(weather[,2:12], start = c(2013,178), frequency = 365)
+head(weather)
+```
+
+```{r}
+plot(weather[,c(2:5)])
+```
+
+`PRCP -  Precipitation (mm or inches as per user preference, inches to hundredths on Daily Form pdf file)`
+`SNOW - Snowfall (mm or inches as per user preference, inches to tenths on Daily Form pdf file)`
+`SNWD - Snow depth (mm or inches as per user preference, inches on Daily Form pdf file)`
+`TMAX = Maximum temperature (Fahrenheit or Celsius as per user preference, Fahrenheit to tenths on Daily Form pdf file`
+
+#### Split the data into Train and Test Set
+
+```{r}
+weather.train = ts(weather[1:1500,], frequency = 365, start = c(2013, 178), end = c(2017, 217))
+weather.test = ts(weather[1501:1648,], frequency = 365, start = c(2017, 218))
+```
+
+
+#### Build the VAR model
+
+```{r}
+VAR.data.merged = cbind(train.norm[,1], weather.train[,2:5])
+colnames(VAR.data.merged) = c("TotalTrip", "PRCP", "SNOW", "SNWD", "TAVG")
+
+VARselect(VAR.data.merged, lag.max=10, type="both")$selection
+VARselect(VAR.data.merged, lag.max=100, type="both")$selection
+```
+
+```{r}
+var1.model = VAR(VAR.data.merged, p=1, type="both")
+serial.test(var1.model, lags.pt=10, type="PT.asymptotic")
+
+var2.model = VAR(VAR.data.merged, p=2, type="both")
+serial.test(var2.model, lags.pt=10, type="PT.asymptotic")
+
+var3.model = VAR(VAR.data.merged, p=3, type="both")
+serial.test(var3.model, lags.pt=10, type="PT.asymptotic")
+
+var4.model = VAR(VAR.data.merged, p=4, type="both")
+serial.test(var4.model, lags.pt=10, type="PT.asymptotic")
+
+var5.model = VAR(VAR.data.merged, p=5, type="both")
+serial.test(var5.model, lags.pt=10, type="PT.asymptotic")
+
+var6.model = VAR(VAR.data.merged, p=6, type="both")
+serial.test(var6.model, lags.pt=10, type="PT.asymptotic")
+
+var7.model = VAR(VAR.data.merged, p=7, type="both")
+serial.test(var7.model, lags.pt=10, type="PT.asymptotic")
+
+var10.model = VAR(VAR.data.merged, p=10, type="both")
+serial.test(var10.model, lags.pt=10, type="PT.asymptotic")
+```
+
+#### Forecast total number of trips per day using VAR model
+
+```{r}
+forecast.var7 = forecast(var7.model, h = 148)
+```
+
+```{r}
+plot(forecast.var7)
+plot(forecast.var7$forecast$TotalTrip)
+lines(test.norm[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+```
+
+#### Compute the accuracy score and check the VAR model's residuals 
+
+```{r}
+accuracy(forecast.var7$forecast$TotalTrip$mean, test.norm[,1])
+```
+
+
+```{r}
+par(oma=c(0,0,2,0))
+acf(residuals(var7.model), xpd = par("xaxs"))
+```
+
+### 4. Regression With Arima Errors model
+
+#### Build the Regression With Arima Errors model
+
+```{r}
+# With stepwise = FALSE, Approx = FALSE
+
+xreg.train = cbind(PRCP = weather.train[,2], SNOW = weather.train[,3], TEMP = weather.train[,5], STAT = train.set[,2])
+reg.model1 = auto.arima(train.set[,1], lambda = "auto", xreg = xreg.train, stepwise = FALSE, approx = FALSE)
+```
+
+```{r}
+summary(reg.model1)
+```
+
+```{r}
+# Without stepwise = FALSE, Approx = FALSE
+reg.model2 = auto.arima(train.set[,1], lambda = "auto", xreg = xreg.train)
+```
+
+```{r}
+summary(reg.model2)
+```
+
+The reg.model2 has lower RMSE and MAPE, hence, it is a better model. 
+
+```{r}
+reg.model = Arima(train.set[,1], order = c(4,1,5), lambda = "auto", xreg = xreg.train)
+```
+
+```{r}
+summary(reg.model)
+```
+
+
+#### Forecast total number of trips per day using Regression with Arima Errors with number of active stations, temperature, precipitation, and snow as predictors
+
+```{r}
+xreg.test = cbind(PRCP = weather.test[,2], SNOW = weather.test[,3], TEMP = weather.test[,5], STAT = test.set[,2])
+forecast.reg = forecast(reg.model, xreg = xreg.test, h = 148)
+```
+
+```{r}
+par(xpd = TRUE)
+plot(forecast.reg)
+lines(test.set[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+```
+
+#### Compute the accuracy score
+
+```{r}
+acc.reg = accuracy(forecast.reg, test.set[,1])
+acc.reg
+```
+
+```{r}
+checkresiduals(forecast.reg)
+```
+
+
+## E. Cross Validation (excludes sARIMA model due to high computational complexity)
+
+#### 1. sNaive
+
+```{r}
+
+n = length(divvy.norm[,1]) # number of data points
+p = 365 # period
+H = 366 # forecast horizon
+
+st = tsp(divvy)[1] # gives the start time in time units
+
+error.expanding.sNaive = matrix(NA, floor(n/H), H)
+error.sliding.sNaive = matrix(NA, floor(n/H), H)
+
+for (i in 1:floor(n/H)){
+  
+  train.expanding = window(divvy.norm, end = st + i) # expanding window
+  train.sliding = window(divvy.norm, start = st + i - 1, end = st + i) # sliding window
+  
+  test = window(divvy.norm, start = st + i + 1/p, end = st + i + 1 + 1/p)
+  
+  fcast.expanding.sNaive = forecast(train.expanding[,1], h = H)
+  fcast.sliding.sNaive = forecast( train.sliding[,1], h = H)
+  
+  error.expanding.sNaive[i, 1:length(test[,1])] = (abs(fcast.expanding.sNaive[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+  error.sliding.sNaive[i, 1:length(test[,1])] = (abs(fcast.sliding.sNaive[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+
+}
+
+```
+
+#### 2. Dynamic Harmonic Regression
+
+```{r}
+n = length(divvy.norm[,1]) # number of data points
+p = 365 # period
+H = 366 # forecast horizon
+
+st = tsp(divvy)[1] # gives the start time in time units
+
+error.expanding.DHR = matrix(NA, floor(n/H), H)
+error.sliding.DHR = matrix(NA, floor(n/H), H)
+
+for (i in 1:floor(n/H)){
+  
+  train.expanding = window(divvy.norm, end = st + i) # expanding window
+  train.sliding = window(divvy.norm, start = st + i - 1, end = st + i) # sliding window
+  
+  test = window(divvy.norm, start = st + i + 1/p, end = st + i + 1 + 1/p)
+  
+  fit.expanding.DHR = Arima(train.expanding[,1], xreg = fourier(train.expanding[,1], 1), order = c(1,1,1))
+  fit.sliding.DHR = Arima(train.sliding[,1], xreg = fourier(train.sliding[,1], 1), order = c(1,1,1))
+  
+  fcast.expanding.DHR = forecast(fit.expanding.DHR, xreg = fourier(train.expanding[,1], 1), h = H)
+  fcast.sliding.DHR = forecast(fit.sliding.DHR, xreg = fourier(train.sliding[,1], 1), h = H)
+  
+  error.expanding.DHR[i, 1:length(test[,1])] = (abs(fcast.expanding.DHR[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+  error.sliding.DHR[i, 1:length(test[,1])] = (abs(fcast.sliding.DHR[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+
+}
+```
+
+#### 3. VAR
+
+```{r}
+n = length(divvy.norm[,1]) # number of data points
+p = 365 # period
+H = 366 # forecast horizon
+
+st = tsp(divvy)[1] # gives the start time in time units
+
+error.expanding.var = matrix(NA, floor(n/H), H)
+error.sliding.var = matrix(NA, floor(n/H), H)
+
+for (i in 1:floor(n/H)){
+  
+  train.expanding = window(divvy.norm, end = st + i) # expanding window
+  train.sliding = window(divvy.norm, start = st + i - 1, end = st + i) # sliding window
+  
+  weather.train.expanding = window(weather, end = st + i)
+  weather.train.sliding = window(weather, start = st + i - 1, end = st + i)
+  
+  train.expanding.merged = cbind(train.expanding[,1], weather.train.expanding[,2:5])
+  colnames(train.expanding.merged) = c("TotalTrip", "PRCP", "SNOW", "SNWD", "TAVG")
+  
+  train.sliding.merged = cbind(train.sliding[,1], weather.train.sliding[,2:5])
+  colnames(train.sliding.merged) = c("TotalTrip", "PRCP", "SNOW", "SNWD", "TAVG")
+  
+  test = window(divvy.norm, start = st + i + 1/p, end = st + i + 1 + 1/p)
+  
+  fit.expanding.var = VAR(train.expanding.merged, p = 7, type = "both")
+  fit.sliding.var = VAR(train.sliding.merged, p = 7, type = "both")
+  
+  fcast.expanding.var = forecast(fit.expanding.var, h = H)
+  fcast.sliding.var = forecast(fit.sliding.var, h = H)
+  
+  error.expanding.var[i, 1:length(test[,1])] = (abs(fcast.expanding.var$forecast$TotalTrip$mean - test[,1])/test[,1])/length(test[,1])*100
+  error.sliding.var[i, 1:length(test[,1])] = (abs(fcast.sliding.var$forecast$TotalTrip$mean - test[,1])/test[,1])/length(test[,1])*100
+
+}
+
+
+```
+
+#### 4. Regression with Arima errors
+
+```{r}
+n = length(divvy[,1]) # number of data points
+p = 365 # period
+H = 366 # forecast horizon
+
+st = tsp(divvy)[1] # gives the start time in time units
+
+error.expanding.xreg = matrix(NA, floor(n/H), H)
+error.sliding.xreg = matrix(NA, floor(n/H), H)
+
+for (i in 1:floor(n/H)){
+  
+  train.expanding = window(divvy, end = st + i) # expanding window
+  train.sliding = window(divvy, start = st + i - 1, end = st + i) # sliding window
+  
+  weather.train.expanding = window(weather, end = st + i)
+  weather.train.sliding = window(weather, start = st + i - 1, end = st + i)
+  
+  test = window(divvy, start = st + i + 1/p, end = st + i + 1 + 1/p)
+ 
+  weather.test = window(weather, start = st + i + 1/p, end = st + i + 1 + 1/p)
+  
+  xreg.expanding = cbind(PRCP = weather.train.expanding[,2], SNOW = weather.train.expanding[,3], TEMP = weather.train.expanding[,5], STAT = train.expanding[,2])
+  xreg.sliding = cbind(PRCP = weather.train.sliding[,2], SNOW = weather.train.sliding[,3], TEMP = weather.train.sliding[,5], STAT = train.sliding[,2])
+  xreg.test = cbind(PRCP = weather.test[,2], SNOW = weather.test[,3], TEMP = weather.test[,5], STAT = test[,2])
+  
+  fit.expanding.xreg = Arima(train.expanding[,1], order = c(4,1,5), lambda = "auto", xreg = xreg.expanding)
+  fit.sliding.xreg = Arima(train.sliding[,1], order = c(4,1,5), lambda = "auto", xreg = xreg.sliding)
+  
+  fcast.expanding.xreg = forecast(fit.expanding.xreg, xreg = xreg.test, h = H)
+  fcast.sliding.xreg = forecast(fit.sliding.xreg, xreg = xreg.test, h = H)
+  
+  error.expanding.xreg[i, 1:length(test[,1])] = (abs(fcast.expanding.xreg[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+  error.sliding.xreg[i, 1:length(test[,1])] = (abs(fcast.sliding.xreg[['mean']] - test[,1])/test[,1])/length(test[,1])*100
+
+}
+```
+
+```{r}
+plot(1:366, colMeans(error.expanding.sNaive, na.rm = TRUE), type = "l", col = 1, xlab = "horizon", ylab = "MAPE", ylim = c(0, max(colMeans(error.expanding.var, na.rm = TRUE))))
+lines(1:366, colMeans(error.expanding.DHR, na.rm = TRUE), type = "l", col = 2)
+lines(1:366, colMeans(error.expanding.var, na.rm = TRUE), type = "l", col = 3)
+lines(1:366, colMeans(error.expanding.xreg, na.rm = TRUE), type = "l", col = 4)
+legend("topleft",legend=c("sNaive - Expanding Window","DHR - Expanding Window", "VAR - Expanding Window", "XREG - Expanding Window"), col = 1:4, lty=1)
+```
+
+```{r}
+plot(1:366, colMeans(error.sliding.sNaive, na.rm = TRUE), type = "l", col = 1, xlab = "horizon", ylab = "MAPE", ylim = c(0, max(colMeans(error.sliding.var, na.rm = TRUE))))
+lines(1:366, colMeans(error.sliding.DHR, na.rm = TRUE), type = "l", col = 2)
+lines(1:366, colMeans(error.sliding.var, na.rm = TRUE), type = "l", col = 3)
+lines(1:366, colMeans(error.sliding.xreg, na.rm = TRUE), type = "l", col = 4)
+legend("topleft",legend=c("sNaive - sliding Window","DHR - sliding Window", "VAR - sliding Window", "XREG - sliding Window"), col = 1:4, lty=1)
+```
+
+
+
+```{r}
+sNaive.mape.expanding = cbind(mean(error.expanding.sNaive[1,]), mean(error.expanding.sNaive[2,]), mean(error.expanding.sNaive[3,]^2), mean(error.expanding.sNaive[4,]^2, na.rm = TRUE))
+DHR.mape.expanding = cbind(mean(error.expanding.DHR[1,]), mean(error.expanding.DHR[2,]), mean(error.expanding.DHR[3,]^2), mean(error.expanding.DHR[4,]^2, na.rm = TRUE))
+VAR.mape.expanding = cbind(mean(error.expanding.var[1,]), mean(error.expanding.var[2,]), mean(error.expanding.var[3,]^2), mean(error.expanding.var[4,]^2, na.rm = TRUE))
+xreg.mape.expanding = cbind(mean(error.expanding.xreg[1,]), mean(error.expanding.xreg[2,]), mean(error.expanding.xreg[3,]^2), mean(error.expanding.xreg[4,]^2, na.rm = TRUE))
+
+MAPE.expanding = rbind(sNaive.mape.expanding, DHR.mape.expanding, VAR.mape.expanding, xreg.mape.expanding)
+colnames(MAPE.expanding) = c("366:366", "731:366", "1096:366", "1461:366")
+rownames(MAPE.expanding) = c("sNaive MAPE", "DHR MAPE", "VAR MAPE", "XREG MAPE")
+MAPE.expanding
+```
+
+```{r}
+plot(1:4, MAPE.expanding[1,], type = "b", col = 1, xlab = "Iteration", ylab = "MAPE", ylim = c(min(MAPE.expanding), max(MAPE.expanding)),xaxt='n')
+lines(1:4, MAPE.expanding[2,], type = "l", col = 2)
+lines(1:4, MAPE.expanding[3,], type = "l", col = 3)
+lines(1:4, MAPE.expanding[4,], type = "l", col = 4)
+legend("topleft",legend=c("sNaive - Expanding Window","DHR - Expanding Window", "VAR - Expanding Window", "XREG - Expanding Window"), col = 1:4, lty=1)
+axis(side=1, at=c(1:4))
+```
+
+
+```{r}
+sNaive.mape.sliding = cbind(mean(error.sliding.sNaive[1,]), mean(error.sliding.sNaive[2,]), mean(error.sliding.sNaive[3,]^2), mean(error.sliding.sNaive[4,]^2, na.rm = TRUE))
+DHR.mape.sliding = cbind(mean(error.sliding.DHR[1,]), mean(error.sliding.DHR[2,]), mean(error.sliding.DHR[3,]^2), mean(error.sliding.DHR[4,]^2, na.rm = TRUE))
+VAR.mape.sliding = cbind(mean(error.sliding.var[1,]), mean(error.sliding.var[2,]), mean(error.sliding.var[3,]^2), mean(error.sliding.var[4,]^2, na.rm = TRUE))
+xreg.mape.sliding = cbind(mean(error.sliding.xreg[1,]), mean(error.sliding.xreg[2,]), mean(error.sliding.xreg[3,]^2), mean(error.sliding.xreg[4,]^2, na.rm = TRUE))
+
+MAPE.sliding = rbind(sNaive.mape.sliding, DHR.mape.sliding, VAR.mape.sliding, xreg.mape.sliding)
+colnames(MAPE.sliding) = c("366:366", "366:366", "366:366", "366:366")
+rownames(MAPE.sliding) = c("sNaive MAPE", "DHR MAPE", "VAR MAPE", "XREG MAPE")
+MAPE.sliding
+```
+
+```{r}
+plot(1:4, MAPE.sliding[1,], type = "b", col = 1, xlab = "Iteration", ylab = "MAPE", ylim = c(min(MAPE.sliding), max(MAPE.sliding)), xaxt='n')
+lines(1:4, MAPE.sliding[2,], type = "l", col = 2)
+lines(1:4, MAPE.sliding[3,], type = "l", col = 3)
+lines(1:4, MAPE.sliding[4,], type = "l", col = 4)
+legend("topleft",legend=c("sNaive - sliding Window","DHR - sliding Window", "VAR - sliding Window", "XREG - sliding Window"), col = 1:4, lty=1)
+axis(side=1, at=c(1:4))
+```
+
+Future Work - Neural Networks
+```{r}
+#nnetar() in forecast library
+nn2 <- nnetar(train.norm[,1], P = 3, size = 5, repeats = 10)
+nn2
+
+nn2.forecast <- forecast(nn2, h = 148)
+checkresiduals(nn2.forecast)
+plot(nn2.forecast)
+lines(test.norm[,1], type  = "l", col = "red")
+legend(2013.4, 28000, inset = c(-0.2,5), legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1, cex = 0.8)
+
+acc.nn2 = accuracy(nn2.forecast$mean, test.norm[,1])
+acc.nn2
+```
+
+```
+
+
+
+
