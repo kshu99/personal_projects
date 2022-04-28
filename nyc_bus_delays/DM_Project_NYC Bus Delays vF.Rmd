@@ -1,0 +1,428 @@
+---
+title: "Data Mining Final Project"
+date: "8/17/2018"
+output: html_document
+---
+
+# Can load all data frames/model objects built in this analysis by running the below code-chunk
+```{r}
+#load('DM_Project_vFinal')
+```
+
+**-------------------------------------------------------Setup and Data Prep--------------------------------------------------**
+
+```{r}
+options(width = 100)
+```
+
+```{r, message = FALSE}
+library(lubridate)
+library(tidyverse)
+library(poLCA)
+library(MASS)
+library(dplyr)
+library(rgdal)
+library(ggmap)
+library(rpart)
+```
+
+```{r}
+# set your working directory here once
+dmprojectpath <- "C:/Users/kshu9_000/Desktop/UChicago/Courses/Quarter 2 - Summer 2018/Data Mining Principles - 31008/Final Project/Datasets/"
+
+df_TSM <- read.csv(paste(dmprojectpath, 'Transportation_Sites_Modified.csv', sep = '/'), stringsAsFactors = F)
+
+# Change the Schools_Serviced Column header name in Bus_Breakdown_and_Delays.csv into OPT_Code before running the below line
+
+df_BBD <- read.csv(paste(dmprojectpath, 'Bus_Breakdown_and_Delays.csv', sep = '/'), stringsAsFactors = F)
+
+df_Routes <- read.csv(paste(dmprojectpath, 'Routes.csv', sep = '/'), stringsAsFactors = F)
+
+df_BBD$Occurred_On <- as.POSIXct(df_BBD$Occurred_On, format="%m/%d/%Y %H:%M")
+
+df_BBD$Created_On <- as.POSIXct(df_BBD$Created_On, format="%m/%d/%Y %H:%M")
+
+df_BBD$Informed_On <- as.POSIXct(df_BBD$Informed_On, format="%m/%d/%Y %H:%M")
+
+df_BBD$Last_Updated_On <- as.POSIXct(df_BBD$Last_Updated_On, format="%m/%d/%Y %H:%M")
+```
+
+```{r}
+df_TSMBBD <- merge(x = df_TSM, y=df_BBD)
+# 174218 obs. of 37 variables
+
+df_clean <- subset(df_TSMBBD, df_TSMBBD$Run_Type != '' & df_TSMBBD$School_Age_or_PreK == 'School-Age')
+# 143917 obs. of 37 variables 
+
+df_merge <- as.data.frame(merge(x = df_clean, y = df_Routes))
+# 142603 obs. of 49 variables
+
+df_final <- subset(df_merge, df_merge$Boro != '' & df_merge$Boro != 'All Boroughs')
+# 135237 obs. of 49 variables
+```
+
+**--------------------------------------------------------------LCA------------------------------------------------------------**
+
+## First LCA
+
+### City, Run_Type, Vehicle_TypeDescription, Reason
+
+```{r}
+fml1 <- data.frame(df_final[, c("Run_Type", "Reason", "City", "Vehicle_TypeDescription")])
+
+df1 <- as.data.frame(apply(fml1, 2, factor))
+```
+
+```{r}
+nSample <- 135237
+train_size <- round(nSample * (70 / 100))
+
+set.seed(7881)
+train_data <- sample(1:nrow(df1), train_size) 
+df.train <- df1[train_data, ]
+df.holdout <- df1[-train_data,]
+
+i <-  2:5
+lca.results.1 <- lapply(i, function(i) {
+  f1 <- cbind(City,
+              Run_Type,
+              Vehicle_TypeDescription,
+              Reason) ~ 1
+  results <- list()
+  results$noOfClasses <- i
+  cat("No.ofclasses", i)
+  cat("\n\n\n")
+  LCA1 <- poLCA(f1, df.train, nclass = i, nrep = 10, tol = .001, verbose = FALSE, graphs = TRUE)
+  results$aic <- LCA1$aic
+  results$bic <- LCA1$bic
+  return(list(results = results, LCA = LCA1))
+})
+```
+
+```{r}
+lca.results.report.1 <- data.frame( do.call(rbind, lapply(lca.results.1, function(x){x$res})) ) 
+
+matplot(lca.results.report.1$noOfClasses,
+        cbind(lca.results.report.1$aic, lca.results.report.1$bic),
+        type = "b",
+        col = c("purple","red"),
+        lty = c(1, 1),
+        xlab = 'Number of Classes',
+        ylab = 'Information Criterion')
+legend(x = 'topright', legend = c('AIC','BIC'), lty = c(1, 1), col = c('purple','red'))
+```
+
+## Second LCA
+
+### City, Run_Type, Vehicle_TypeDescription, Boro
+
+```{r}
+fml2 <- data.frame(df_final[, c("Run_Type", "Boro", "City", "Vehicle_TypeDescription")])
+
+df2 <- as.data.frame(apply(fml2, 2, factor))
+```
+
+```{r}
+nSample <- 135237 
+train_size <- nSample * (70 / 100)
+
+set.seed(7881)
+train_data <- sample(1:nrow(df2), train_size) 
+df.train <- df2[train_data, ]
+df.holdout <- df2[-train_data,]
+
+i <-  2:5
+lca.results.2 <- lapply( i, function(i) {
+  f2 <- cbind(City,
+              Run_Type,
+              Vehicle_TypeDescription,
+              Boro) ~ 1
+  results <- list()
+  results$noOfClasses <- i
+  cat("No.ofclasses", i)
+  cat("\n\n\n")
+  LCA2 <- poLCA(f2, df.train, nclass = i, nrep = 10, tol = .001, verbose = FALSE, graphs = TRUE)
+  results$aic <- LCA2$aic
+  results$bic <- LCA2$bic
+  results$probs <- LCA2$probs
+  return(list(results = results, LCA = LCA2))
+})
+```
+
+```{r}
+lca.results.report.2 <- data.frame( do.call(rbind, lapply(lca.results.2, function(x){x$res})) ) 
+
+matplot(lca.results.report.2$noOfClasses,
+        cbind(lca.results.report.2$aic, lca.results.report.2$bic),
+        type = "b",
+        col = c("purple","red"),
+        lty = c(1, 1),
+        xlab = 'Number of Classes',
+        ylab = 'Information Criterion')
+legend(x = 'topright', legend = c('AIC','BIC'), lty = c(1, 1), col = c('purple','red'))
+```
+
+**Holdout validation of chosen solution (3-Class)**
+```{r}
+f2 <- cbind(City,
+            Run_Type,
+            Vehicle_TypeDescription,
+            Boro) ~ 1
+LCA2.3.holdout <- poLCA(f2, df.train, nclass = 3, nrep = 10, tol = .001, verbose = FALSE, graphs = TRUE, 
+                        probs.start=lca.results.report.2$probs[2])
+```
+
+**When do delays occur for Special Ed AM Runs?**
+```{r}
+times <- apply((subset(cbind(substr(df_final$Occurred_On, 12, 13),substr(df_final$Occurred_On, 15, 16)), 
+                 df_final$Run_Type=='Special Ed AM Run')), 2, as.numeric)
+times <- times[,1] + round((times[,2]/60),1)
+hist(times)
+hist(times[times<7 & times>5.9])
+hist(times[times<8 & times>6.9])
+```
+
+**How many delays/breakdowns correspond to routes with multiple schools listed?**
+```{r}
+length(which(grepl("@",unique(df_final$Name))))/length(unique(df_final$Name))
+```
+
+**-------------------------------------------------------CART-----------------------------------------------------------------**
+
+**Convert lat and long of school to UTM before building tree model**
+```{r}
+Trans_Sites <- data.frame(Latitude=df_final$Latitude, Longitude=df_final$Longitude, School.Year=df_final$ï..School_Year)
+map <- get_map('New York City', maptype='terrain', source='google')
+ggmap(map, base_layer = ggplot(aes(x=Longitude, y=Latitude), data=Trans_Sites)) + geom_point(color="red",alpha=0.05)
+cord.dec <- SpatialPoints(cbind(Trans_Sites$Longitude, Trans_Sites$Latitude), proj4string=CRS("+proj=longlat"))
+cord.UTM <- spTransform(cord.dec, CRS("+init=epsg:2263"))
+plot(cord.UTM, axes=TRUE, xlab="x-coord", ylab="y-coord", main="UTM",pch=1,xlim=c(975000,1000000),ylim=c(100000,350000))
+points(df_final$XCoordinates, df_final$YCoordinates, col='green')
+```
+
+**Generate Tree 1**
+```{r}
+unique(df_final$City)
+unique(df_final$Garage_City)
+
+df_final.temp <- data.frame(df_final, data.frame(cord.UTM))
+
+df_final.temp$Number_Of_Students_On_The_Bus <- as.numeric(df_final.temp$Number_Of_Students_On_The_Bus)
+
+df_final.temp <- subset(df_final.temp, df_final.temp$Number_Of_Students_On_The_Bus!='NA' & 
+                        df_final.temp$Number_Of_Students_On_The_Bus<=50 & df_final.temp$Run_Type=='Special Ed AM Run' 
+                        & df_final.temp$Garage_City!='' & df_final.temp$Reason=='Heavy Traffic')
+hist(df_final.temp$Number_Of_Students_On_The_Bus,main='Histogram of # students on bus (when delay is reported)')
+
+df_final.temp$Number_Of_Students_On_The_Bus <- (df_final.temp$Number_Of_Students_On_The_Bus==0)*1
+
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=='BROOKLYN')] <- 'Brooklyn'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=='brooklyn')] <- 'Brooklyn'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=='BKLYN')] <- 'Brooklyn'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=='BROOKLYN NY')] <- 'Brooklyn'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="B'klyn")] <- 'Brooklyn'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="BRONX")] <- 'Bronx'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="bronx")] <- 'Bronx'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="BRON")] <- 'Bronx'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="SI")] <- 'Staten Island'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Pelham Manor")] <- 'Westchester'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Pelham")] <- 'Westchester'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="QUEENS")] <- 'Queens'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Jamaica")] <- 'Queens'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Yonkers")] <- 'Westchester'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Astoria")] <- 'Queens'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Whitestone")] <- 'Queens'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Elmont")] <- 'Nassau'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Ozone Park")] <- 'Queens'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Mount Vernon")] <- 'Westchester'
+df_final.temp$Garage_City[which(df_final.temp$Garage_City=="Oceanside")] <- 'Nassau'
+
+unique(df_final.temp$City)
+unique(df_final.temp$Garage_City)
+
+City.Flag <- (df_final.temp$Garage_City==df_final.temp$Boro)*1
+
+tree.df <- data.frame(City.Flag=factor(City.Flag), Num.S.Flag=factor(df_final.temp$Number_Of_Students_On_The_Bus), 
+                      Boro=factor(df_final.temp$Boro), School.Type=factor(df_final.temp$Affiliation))
+
+nSample <- 56855
+train_size_tree <- round(nSample * (70 / 100))
+
+set.seed(7881)
+train_data_tree <- sample(1:nrow(tree.df), train_size_tree) 
+
+df.train.tree <- tree.df[train_data_tree, ]
+df.holdout.tree <- tree.df[-train_data_tree, ]
+
+tree.train <- rpart(df.train.tree,control=rpart.control(cp=0,minsplit=30,xval=10, maxsurrogate=0))
+plotcp(tree.train,minline=TRUE,col=4)
+
+cptable <- data.frame(tree.train$cptable)
+cp <- cptable[which.min(cptable$xerror),1]
+
+tree.train.pruned <- rpart(df.train.tree,control=rpart.control(cp=cp, minsplit=30, xval=10, maxsurrogate=0))
+
+par(mai=c(0.1,0.1,0.1,0.1))
+plot(tree.train.pruned,main="CART: NYC Delays",col=3, compress=TRUE, 
+     branch=0.5,uniform=TRUE)
+text(tree.train.pruned,cex=0.7,col=4,use.n=TRUE,fancy=TRUE,fwidth=0.2,fheight=0.05,bg=c(5))
+
+table(df.train.tree[,1], predict(tree.train.pruned,type="class"))
+round(prop.table(table(df.train.tree[,1], predict(tree.train.pruned,type="class")),1),2)
+```
+
+**Generate Tree 2**
+```{r}
+dist <- sqrt((df_final.temp$XCoordinates-df_final.temp$coords.x1)^2 + (df_final.temp$YCoordinates-df_final.temp$coords.x2)^2)
+
+times <- apply((cbind(substr(df_final.temp$Occurred_On, 12, 13),substr(df_final.temp$Occurred_On, 15, 16))), 2, as.numeric)
+times <- times[,1] + round((times[,2]/60),1)
+
+tree.df <- data.frame(City.Flag=factor(City.Flag), 
+                      Num.S.Flag=factor(df_final.temp$Number_Of_Students_On_The_Bus), 
+                      School.Type=factor(df_final.temp$Affiliation), dist=dist, Boro=factor(df_final.temp$Boro))
+
+nSample <- 56855
+train_size_tree <- round(nSample * (70 / 100))
+
+set.seed(7881)
+train_data_tree <- sample(1:nrow(tree.df), train_size_tree) 
+
+df.train.tree <- tree.df[train_data_tree, ]
+df.holdout.tree <- tree.df[-train_data_tree, ]
+
+tree.train <- rpart(df.train.tree,control=rpart.control(cp=0,minsplit=30,xval=10, maxsurrogate=0))
+plotcp(tree.train,minline=TRUE,col=4)
+
+cptable <- data.frame(tree.train$cptable)
+cp <- cptable[which.min(cptable$xerror),1]
+
+tree.train.pruned <- rpart(df.train.tree,control=rpart.control(cp=.003, minsplit=30, xval=10, maxsurrogate=0))
+
+par(mai=c(0.1,0.1,0.1,0.1))
+plot(tree.train.pruned,main="CART: NYC Bus Delays",col=3, compress=TRUE, 
+     branch=0.5,uniform=TRUE)
+text(tree.train.pruned,cex=0.7,col=4,use.n=TRUE,fancy=TRUE,fwidth=0.2,fheight=0.02,bg=c(5))
+
+table(df.train.tree[,1], predict(tree.train.pruned,type="class"))
+round(prop.table(table(df.train.tree[,1], predict(tree.train.pruned,type="class")),1),2)
+```
+
+**Generate Tree 3 - Selected Tree Solution**
+```{r}
+tree.df <- data.frame(Boro=factor(df_final.temp$Boro), City.Flag=factor(City.Flag), 
+                      Num.S.Flag=factor(df_final.temp$Number_Of_Students_On_The_Bus), 
+                      School.Type=factor(df_final.temp$Affiliation), dist=dist)
+
+nSample <- 56855
+train_size_tree <- round(nSample * (70 / 100))
+
+set.seed(7881)
+train_data_tree <- sample(1:nrow(tree.df), train_size_tree) 
+
+df.train.tree <- tree.df[train_data_tree, ]
+df.holdout.tree <- tree.df[-train_data_tree, ]
+
+tree.train <- rpart(df.train.tree,control=rpart.control(cp=0,minsplit=30,xval=10, maxsurrogate=0))
+plotcp(tree.train,minline=TRUE,col=4)
+
+cptable <- data.frame(tree.train$cptable)
+cp <- cptable[which.min(cptable$xerror),1]
+
+tree.train.pruned <- rpart(df.train.tree,control=rpart.control(cp=cp, minsplit=30, xval=10, maxsurrogate=0))
+
+par(mai=c(0.1,0.1,0.1,0.1))
+plot(tree.train.pruned,main="CART: NYC Bus Delays",col=3, compress=TRUE, 
+     branch=0.5,uniform=TRUE)
+text(tree.train.pruned,cex=0.7,col=4,use.n=TRUE,fancy=TRUE,fwidth=0.2,fheight=0.02,bg=c(5))
+
+round(prop.table(table(df.train.tree[,1], predict(tree.train.pruned,type="class")),1),2)
+round(prop.table(table(df.holdout.tree[,1], predict(tree.train.pruned,newdata = df.holdout.tree[,-1],type='class')),1),2)
+tree.train.pruned$variable.importance
+```
+
+```{r}
+City.Flag2 <- (df_final.temp$City==df_final.temp$Boro)*1
+(table(df_final.temp$Garage_City, df_final.temp$Boro, City.Flag==0, df_final.temp$Number_Of_Students_On_The_Bus==1,
+       City.Flag2==1, df_final.temp$Run_Type=='Special Ed AM Run'))
+```
+
+**--------------------------------------------Negative Binomial Regression---------------------------------------------------**
+
+```{r}
+dfNBR <- df_BBD[,c("Run_Type","Boro","Reason","Occurred_On")]
+dfNBR <- subset(dfNBR, dfNBR$Run_Type=="Special Ed AM Run")
+dfNBR <- subset(dfNBR, dfNBR$Reason=="Heavy Traffic")
+dfNBR <- subset(dfNBR, dfNBR$Boro!='')
+dfNBR <- subset(dfNBR, dfNBR$Boro!='All Boroughs')
+dfNBR$Occurred_On <- as.POSIXct(dfNBR$Occurred_On, format="%m/%d/%Y")
+dfNBR$Date <- format(dfNBR$Occurred_On, "%m/%d/%Y")
+dfNBR$weekdays <- weekdays(dfNBR$Occurred_On)
+
+cleaned <- dfNBR[c("Boro", "Date", "weekdays")]
+counts <- cleaned %>% group_by(Boro,Date,weekdays) %>% summarise(count_delays=n())
+counts$weekdays <- factor(counts$weekdays)
+counts$Date <- as.Date(counts$Date, '%m/%d/%Y')
+
+# Verify date/borough combinations with missing counts are holidays
+date.range <-seq.Date(as.Date("2015-09-01"), as.Date("2018-06-28"), by="day")
+wday <- weekdays(date.range)
+date.range.df <- data.frame(date.range, wday)
+colnames(date.range.df) <- c("Date", "weekdays")
+date.range.df <- subset(date.range.df, date.range.df$weekdays != 'Sunday')
+date.range.df <- subset(date.range.df, date.range.df$weekdays != 'Saturday')
+Boroughs <- unique(counts$Boro)
+date.range.boro.df <- merge(Boroughs, date.range.df, by=NULL)
+all.dates <- left_join(date.range.boro.df, counts)
+missing.dates <- subset(all.dates, is.na(all.dates$count_delays))
+table(missing.dates$Date)
+
+nSample <- 5004
+train_size_nbr <- round(nSample * (70 / 100))
+set.seed(7881)
+train_data_nbr <- sample(1:nrow(counts), train_size_nbr) 
+df.train.nbr <- counts[train_data_nbr, ]
+df.holdout.nbr <- counts[-train_data_nbr, ]
+
+# Train and Holdout
+nb.fit.train <- glm.nb(count_delays ~ Boro + relevel(weekdays,"Monday"), data=df.train.nbr)
+summary(nb.fit.train)
+RMSE.train <- sqrt(mean((nb.fit.train$y-nb.fit.train$fitted.values)^2))
+RMSE.holdout <- sqrt(mean((df.holdout.nbr$count_delays-predict(nb.fit.train, newdata=df.holdout.nbr[,-4],type='response'))^2))
+round(cbind(RMSE.train, RMSE.holdout),2)
+
+# Goodness of fit test
+pchisq(nb.fit.train$deviance, df=nb.fit.train$df.residual, lower.tail=FALSE) #0.8531
+
+# VS. Poisson
+poi.fit.train <- glm(count_delays ~ Boro + relevel(weekdays,"Monday"), data=df.train.nbr, family = poisson(link="log"))
+summary(poi.fit.train)
+
+# Predict delay count by day of week, borough
+new.data <- merge(unique(counts$Boro), unique(counts$weekdays), by=NULL)
+colnames(new.data) <- c("Boro", "weekdays")
+predictions <- predict(nb.fit.train, newdata = new.data, type='response')
+pred.df <- data.frame(new.data, round(predictions))
+
+Manhattan <- subset(pred.df, pred.df$Boro=='Manhattan')
+Queens <- subset(pred.df, pred.df$Boro=='Queens')
+Bronx <- subset(pred.df, pred.df$Boro=='Bronx')
+Staten.Island <- subset(pred.df, pred.df$Boro=='Staten Island')
+Brooklyn <- subset(pred.df, pred.df$Boro=='Brooklyn')
+
+Manhattan <- Manhattan[c(3,1,2,4,5),]
+Queens <- Queens[c(3,1,2,4,5),]
+Bronx <- Bronx[c(3,1,2,4,5),]
+Staten.Island <- Staten.Island[c(3,1,2,4,5),]
+Brooklyn <- Brooklyn[c(3,1,2,4,5),]
+
+plot(Manhattan$round.predictions.,ylim=c(0,65), type='l', ylab="Count of Delays", xlab = 'Weekday', xaxt='n', 
+     main = "Predicted Count of Delays, By Weekday")
+axis(1, at=1:5, labels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+lines(Queens$round.predictions.,type='l',col='red')
+lines(Bronx$round.predictions.,type='l',col='blue')
+lines(Staten.Island$round.predictions.,type='l',col='green')
+lines(Brooklyn$round.predictions.,type='l',col='purple')
+legend('topright', legend=c("Manhattan", "Brooklyn", "Bronx", "Queens", "Staten Island"),
+       col=c("black", "purple", "blue", "red", "green"), lty=1, cex=0.6)
+```
